@@ -59,6 +59,12 @@ Le référent d'un bénévole est tout manager dont `poles` contient le pôle du
 - **Hors réseau :** le dernier planning chargé reste consultable. Les modifications demandent une connexion.
 - **Chargement :** Apps Script met souvent 1 à 3 secondes à répondre.
 
+## Publication automatique
+
+À la fin de chaque intervention de Claude Code sur ce dossier, `tools/auto-publish.ps1` envoie les changements sur GitHub, et le site se met à jour en une à deux minutes. Le dépôt étant public, tout fichier du dossier est publié s'il n'est pas listé dans `.gitignore`. Pour désactiver : supprimez le bloc `Stop` de `.claude/settings.local.json`.
+
+`backend/Code.js` reste à recoller dans Apps Script, avec une nouvelle version du déploiement.
+
 ## Tester en local (Windows)
 
 ```bash
