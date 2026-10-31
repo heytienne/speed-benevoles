@@ -218,7 +218,8 @@
       '</header>' +
       (state.offline ? '<div class="banner">Hors connexion : dernières données enregistrées.</div>' : '') +
       (api.isDemo ? '<div class="banner">MODE DÉMO : données fictives</div>' : '') +
-      '<main class="main">' + content + '</main></div></div>' + (options.after || '');
+      (options.nav || '') +
+      '<main class="main' + (options.back ? ' narrow' : '') + (options.nav ? '' : ' no-nav') + '">' + content + '</main></div></div>' + (options.after || '');
   }
 
   function nav(items) {
@@ -243,8 +244,9 @@
   function groupByDay(shifts, draw) {
     var html = '';
     unique(shifts.map(festivalDay)).forEach(function (d) {
-      html += '<h2 class="day-title">' + esc(dayLabel(d)) + '</h2>';
+      html += '<h2 class="day-title">' + esc(dayLabel(d)) + '</h2><div class="card-grid">';
       shifts.filter(function (s) { return festivalDay(s) === d; }).forEach(function (s) { html += draw(s); });
+      html += '</div>';
     });
     return html;
   }
@@ -402,7 +404,7 @@
       : state.tab === 'planning' ? benevolePlanning()
       : state.tab === 'contacts' ? benevoleContacts()
       : benevoleStats();
-    root.innerHTML = shell(content, { after: nav([['planning', 'Planning'], ['contacts', 'Référents'], ['stats', 'Stats']]) });
+    root.innerHTML = shell(content, { nav: nav([['planning', 'Planning'], ['contacts', 'Référents'], ['stats', 'Stats']]) });
   }
 
   function benevolePlanning() {
@@ -424,7 +426,7 @@
   function benevoleContacts() {
     var poles = unique(state.data.shifts.map(function (s) { return s.pole; }));
     if (!poles.length) return '<div class="empty"><b>Aucun référent</b>Vos référents apparaîtront avec vos shifts.</div>';
-    return '<h1 class="section-title">Mes référents</h1>' + poles.map(function (pole) {
+    return '<h1 class="section-title">Mes référents</h1><div class="card-grid">' + poles.map(function (pole) {
       var shift = state.data.shifts.filter(function (s) { return s.pole === pole; })[0];
       var refs = shift.referents.length
         ? shift.referents.map(function (r) {
@@ -433,7 +435,7 @@
         }).join('')
         : '<p class="hint">Aucun référent renseigné pour ce pôle.</p>';
       return '<section class="card"><h3>Pôle ' + esc(pole) + '</h3>' + refs + '</section>';
-    }).join('');
+    }).join('') + '</div>';
   }
 
   function bars(rows, format) {
@@ -465,12 +467,12 @@
       '<div class="tile hot"><div class="num">' + esc(hours(total)) + '</div><div class="lab">de bénévolat sur le festival</div></div>' +
       '<div class="tile"><div class="num">' + shifts.length + '</div><div class="lab">' + (shifts.length > 1 ? 'shifts' : 'shift') + '</div></div>' +
       '<div class="tile"><div class="num">' + esc(hours(done)) + '</div><div class="lab">déjà effectuées</div></div></div>' +
-      '<section class="card"><h3>Heures par jour</h3>' + bars(sumBy(shifts, festivalDay, dayLabel), hours) + '</section>' +
+      '<div class="card-grid"><section class="card"><h3>Heures par jour</h3>' + bars(sumBy(shifts, festivalDay, dayLabel), hours) + '</section>' +
       '<section class="card"><h3>Heures par pôle</h3>' + bars(sumBy(shifts, function (s) { return s.pole; }), hours) + '</section>' +
       '<section class="card"><h3>Toute l\'équipe</h3><div class="tiles" style="margin:8px 0 0">' +
       '<div class="tile"><div class="num">' + fest.benevoles + '</div><div class="lab">bénévoles</div></div>' +
       '<div class="tile"><div class="num">' + esc(hours(fest.heures)) + '</div><div class="lab">au total</div></div></div>' +
-      '<p class="hint">Vous assurez ' + share + ' % des heures prévues. Merci !</p></section>';
+      '<p class="hint">Vous assurez ' + share + ' % des heures prévues. Merci !</p></section></div>';
   }
 
   /* ---------- Manager ---------- */
@@ -605,7 +607,7 @@
     var all = list.every(function (b) { return state.selected[b.id]; });
     return '<h1 class="section-title">Mes bénévoles</h1>' +
       '<button class="btn small ghost" data-act="selectAll" data-ids="' + esc(list.map(function (b) { return b.id; }).join(',')) + '">' + (all ? 'Tout désélectionner' : 'Tout sélectionner') + '</button>' +
-      '<div style="margin-top:6px">' + list.map(function (b) { return benevoleRow(b); }).join('') + '</div>';
+      '<div class="row-list">' + list.map(function (b) { return benevoleRow(b); }).join('') + '</div>';
   }
 
   function selectBar(noNav) {
@@ -792,7 +794,7 @@
       return;
     }
     var content = state.tab === 'shifts' ? managerShifts() : managerBenevoles();
-    root.innerHTML = shell(content, { after: nav([['shifts', 'Shifts'], ['benevoles', 'Bénévoles']]) + selectBar(false) });
+    root.innerHTML = shell(content, { nav: nav([['shifts', 'Shifts'], ['benevoles', 'Bénévoles']]), after: selectBar(false) });
   }
 
   function render() {

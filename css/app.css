@@ -476,3 +476,53 @@ input[type=checkbox] { width: 24px; height: 24px; accent-color: var(--black); fl
 .skeleton { height: 96px; border-radius: 10px; margin-bottom: 12px; background: var(--halftone) 0 0 / 6px 6px, #eee; animation: pulse 1.2s infinite alternate; }
 @keyframes pulse { to { opacity: .45; } }
 @media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
+
+.row-list { margin-top: 6px; }
+.main.no-nav { padding-bottom: 24px; }
+
+/* Grands écrans : menu sous l'en-tête, contenu sur toute la largeur */
+@media (min-width: 768px) {
+  .frame { padding: 10px; }
+  .frame-in { max-width: 1280px; }
+  body[data-role="login"] .frame-in { max-width: 480px; align-self: center; }
+  .topbar { font-size: 12px; padding: 8px 16px; }
+  .header { padding: 12px 20px; }
+  .logo.sm { font-size: 42px; }
+  .nav {
+    position: static;
+    transform: none;
+    width: auto;
+    max-width: none;
+    padding: 0 20px;
+  }
+  .nav button { flex: none; min-height: 48px; padding: 0 28px; }
+  .main, .main.no-nav { padding: 22px 20px 32px; }
+  .main.narrow { width: 100%; max-width: 760px; margin: 0 auto; }
+  .section-title { font-size: 36px; }
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 14px;
+    align-items: start;
+  }
+  .card-grid > .ticket, .card-grid > .card { margin: 0; }
+  .tiles { grid-template-columns: repeat(4, 1fr); }
+  .tile.hot { grid-column: span 2; }
+  .row-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); column-gap: 24px; }
+  .cal { max-height: max(420px, calc(100dvh - 300px)); }
+  .select-bar, .select-bar.no-nav {
+    left: auto;
+    right: 36px;
+    bottom: 30px;
+    transform: none;
+    width: 320px;
+  }
+}
+
+@media (hover: hover) {
+  button.ticket:hover, .cal-block:hover { box-shadow: 0 0 0 2px var(--black); }
+  .btn:hover { filter: brightness(1.08); }
+  .chip:hover { background-color: #eee; }
+  .chip[aria-pressed="true"]:hover { background-color: var(--black); }
+  .nav button:not([aria-current="page"]):hover { color: var(--accent); }
+}
