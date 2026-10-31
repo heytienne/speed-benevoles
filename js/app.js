@@ -53,6 +53,13 @@
   function dayShort(iso) {
     return parseDay(iso).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric' });
   }
+  // Un shift commençant avant 6h appartient à la soirée de la veille (00h-02h du vendredi soir).
+  function festivalDay(s) {
+    if (s.debut >= '06:00') return s.date;
+    var d = parseDay(s.date);
+    d.setDate(d.getDate() - 1);
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
   function time(t) { return t.replace(':', 'h').replace('h00', 'h'); }
   function hours(h) {
     var r = Math.round(h * 10) / 10;
@@ -218,9 +225,9 @@
 
   function groupByDay(shifts, draw) {
     var html = '';
-    unique(shifts.map(function (s) { return s.date; })).forEach(function (d) {
+    unique(shifts.map(festivalDay)).forEach(function (d) {
       html += '<h2 class="day-title">' + esc(dayLabel(d)) + '</h2>';
-      shifts.filter(function (s) { return s.date === d; }).forEach(function (s) { html += draw(s); });
+      shifts.filter(function (s) { return festivalDay(s) === d; }).forEach(function (s) { html += draw(s); });
     });
     return html;
   }
@@ -325,11 +332,11 @@
     }).join('');
   }
 
-  function sumBy(shifts, key, label) {
-    return unique(shifts.map(function (s) { return s[key]; })).map(function (k) {
+  function sumBy(shifts, keyOf, label) {
+    return unique(shifts.map(keyOf)).map(function (k) {
       return {
         label: label ? label(k) : k,
-        value: shifts.filter(function (s) { return s[key] === k; }).reduce(function (t, s) { return t + s.heures; }, 0)
+        value: shifts.filter(function (s) { return keyOf(s) === k; }).reduce(function (t, s) { return t + s.heures; }, 0)
       };
     });
   }
@@ -346,8 +353,8 @@
       '<div class="tile hot"><div class="num">' + esc(hours(total)) + '</div><div class="lab">de bénévolat sur le festival</div></div>' +
       '<div class="tile"><div class="num">' + shifts.length + '</div><div class="lab">' + (shifts.length > 1 ? 'shifts' : 'shift') + '</div></div>' +
       '<div class="tile"><div class="num">' + esc(hours(done)) + '</div><div class="lab">déjà effectuées</div></div></div>' +
-      '<section class="card"><h3>Heures par jour</h3>' + bars(sumBy(shifts, 'date', dayLabel), hours) + '</section>' +
-      '<section class="card"><h3>Heures par pôle</h3>' + bars(sumBy(shifts, 'pole'), hours) + '</section>' +
+      '<section class="card"><h3>Heures par jour</h3>' + bars(sumBy(shifts, festivalDay, dayLabel), hours) + '</section>' +
+      '<section class="card"><h3>Heures par pôle</h3>' + bars(sumBy(shifts, function (s) { return s.pole; }), hours) + '</section>' +
       '<section class="card"><h3>Toute l\'équipe</h3><div class="tiles" style="margin:8px 0 0">' +
       '<div class="tile"><div class="num">' + fest.benevoles + '</div><div class="lab">bénévoles</div></div>' +
       '<div class="tile"><div class="num">' + esc(hours(fest.heures)) + '</div><div class="lab">au total</div></div></div>' +
@@ -358,7 +365,7 @@
 
   function visibleShifts() {
     return state.data.shifts.filter(function (s) {
-      return (!state.filterPole || s.pole.toLowerCase() === state.filterPole.toLowerCase()) && (!state.filterDay || s.date === state.filterDay);
+      return (!state.filterPole || s.pole.toLowerCase() === state.filterPole.toLowerCase()) && (!state.filterDay || festivalDay(s) === state.filterDay);
     });
   }
 
@@ -378,7 +385,7 @@
           return '<button class="chip" data-act="filterPole" data-v="' + esc(p) + '" aria-pressed="' + (state.filterPole === p) + '">' + esc(p) + '</button>';
         }).join('') + '</div>';
     }
-    var days = unique(d.shifts.map(function (s) { return s.date; }));
+    var days = unique(d.shifts.map(festivalDay));
     if (days.length > 1) {
       html += '<div class="chips" aria-label="Filtrer par jour"><button class="chip" data-act="filterDay" data-v="" aria-pressed="' + !state.filterDay + '">Tous les jours</button>' +
         days.map(function (x) {
@@ -436,7 +443,7 @@
           '<button class="icon-btn" data-act="remove" data-id="' + esc(id) + '" aria-label="Retirer ' + esc(b.nom) + '">✕</button>'
       });
     }).join('');
-    return ticket(s, { extra: dayShort(s.date) + ' ' + staffingPill(s) }) +
+    return ticket(s, { extra: dayShort(festivalDay(s)) + ' ' + staffingPill(s) }) +
       '<section class="card"><h3>Bénévoles prévus</h3>' +
       (rows || '<p class="hint">Personne sur ce shift pour le moment.</p>') +
       '<div class="contact-actions"><button class="btn small" data-act="pickAdd">+ Ajouter</button>' +
@@ -471,7 +478,7 @@
     var s = shiftById(view.shiftId);
     if (!s) return '<div class="empty"><b>Shift introuvable</b></div>';
     var title = view.oldId ? 'Remplacer ' + firstName(benevole(view.oldId).nom) : 'Ajouter un bénévole';
-    return '<h1 class="section-title">' + esc(title) + '</h1><p class="hint">' + esc(s.intitule) + ' · ' + esc(dayShort(s.date)) + ' · ' + esc(time(s.debut)) + ' → ' + esc(time(s.fin)) + '</p>' +
+    return '<h1 class="section-title">' + esc(title) + '</h1><p class="hint">' + esc(s.intitule) + ' · ' + esc(dayShort(festivalDay(s))) + ' · ' + esc(time(s.debut)) + ' → ' + esc(time(s.fin)) + '</p>' +
       '<input type="search" id="picker-search" placeholder="Rechercher un nom" aria-label="Rechercher un bénévole" value="' + esc(state.search) + '">' +
       '<div id="picker-list" style="margin-top:6px">' + pickerList(view) + '</div>';
   }
@@ -487,7 +494,7 @@
       '<div class="contact-actions">' + contactButtons(b) + '</div></section>' +
       '<section class="card"><h3>Ses shifts</h3>' + (b.busy.length ? b.busy.map(function (x) {
         return '<div class="row" style="min-height:0"><div class="grow"><div class="name">' + esc(x.intitule) + '</div><div class="sub">' +
-          esc(x.pole) + ' · ' + esc(dayShort(x.date)) + ' · ' + esc(time(x.debut)) + ' → ' + esc(time(x.fin)) + '</div></div></div>';
+          esc(x.pole) + ' · ' + esc(dayShort(festivalDay(x))) + ' · ' + esc(time(x.debut)) + ' → ' + esc(time(x.fin)) + '</div></div></div>';
       }).join('') : '<p class="hint">Aucun shift.</p>') + '</section>' +
       '<section class="card"><h3>Commentaires</h3><p class="hint">Visibles uniquement par les managers.</p>' +
       comments.map(function (c) {

@@ -29,9 +29,18 @@
       var rows = this.rows();
       return {
         setValue: function (v) { rows[r - 1][c - 1] = clean(v); save(); },
-        setNumberFormat: function () {}
+        setNumberFormat: function () {},
+        setValues: function (values) {
+          values.forEach(function (line, i) {
+            rows[r - 1 + i] = rows[r - 1 + i] || [];
+            line.forEach(function (v, j) { rows[r - 1 + i][c - 1 + j] = clean(v); });
+          });
+          save();
+        },
+        clearContent: function () { rows.length = r - 1; save(); }
       };
-    }
+    },
+    copyTo: function () { return { setName: function () {} }; }
   };
 
   var ss = {
