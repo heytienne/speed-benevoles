@@ -762,7 +762,7 @@
       return benevoleRow(b, {
         note: note,
         actions: '<button class="btn small ghost" data-act="pickReplace" data-id="' + esc(id) + '">Changer</button>' +
-          '<button class="icon-btn" data-act="remove" data-id="' + esc(id) + '" aria-label="Retirer ' + esc(b.nom) + '">✕</button>'
+          '<button class="btn small ghost" data-act="remove" data-id="' + esc(id) + '" aria-label="Retirer ' + esc(b.nom) + ' de ce créneau">Retirer</button>'
       });
     }).join('');
     return ticket(s, { extra: dayShort(festivalDay(s)) + ' ' + staffingPill(s) }) +
