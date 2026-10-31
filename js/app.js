@@ -20,8 +20,19 @@
     offline: false,
     error: '',
     lastFetch: 0,
-    sms: null
+    sms: null,
+    authView: 'login',
+    loginNom: '',
+    resetToken: null,
+    calScroll: null
   };
+
+  var resetLink = location.hash.match(/^#reset=([\w-]+)$/);
+  if (resetLink) {
+    state.resetToken = resetLink[1];
+    // Le lien est à usage unique : il ne doit rester ni dans la barre d'adresse ni dans l'historique.
+    history.replaceState(null, '', location.pathname);
+  }
 
   /* ---------- Outils ---------- */
 
@@ -115,12 +126,18 @@
       toast('Session expirée, reconnectez-vous.');
       return;
     }
+    if (err.code === 'mustChange') {
+      state.session.mustChange = true;
+      write(SESSION_KEY, state.session);
+      render();
+      return;
+    }
     if (err.code === 'network') state.offline = true;
     toast(err.message || 'Une erreur est survenue.');
   }
 
   function refresh(silent) {
-    if (!state.session) return Promise.resolve();
+    if (!state.session || state.session.mustChange) return Promise.resolve();
     state.loading = true;
     if (!silent) render();
     return api.call('dashboard', null, state.session.token).then(function (data) {
@@ -248,8 +265,98 @@
 
   /* ---------- Connexion ---------- */
 
+  function authFrame(content) {
+    root.innerHTML = '<div class="frame"><div class="frame-in">' + topbar() +
+      '<div class="hero">' + logo(false) + '</div><div class="login">' + content + '</div></div></div>';
+  }
+
+  function renderForgot() {
+    if (state.authView === 'sent') {
+      authFrame('<h1 class="poster-title">Regardez vos mails</h1>' +
+        '<p>Si ce compte existe, un mail vient de partir avec un mot de passe temporaire et un lien pour choisir le vôtre. Pensez à vérifier les spams.</p>' +
+        '<p class="hint">Rien après quelques minutes ? Votre adresse n\'est peut-être pas renseignée : contactez votre référent de pôle.</p>' +
+        '<button class="btn block" data-act="showLogin">Retour à la connexion</button>');
+      return;
+    }
+    authFrame('<form id="forgot-form"><h1 class="poster-title">Première connexion ou mot de passe oublié</h1>' +
+      (state.error ? '<div class="error" role="alert">' + esc(state.error) + '</div>' : '') +
+      '<label class="field"><span>Nom ou adresse mail</span><input type="text" name="identifiant" autocomplete="username" autocapitalize="none" required value="' + esc(state.loginNom) + '"></label>' +
+      '<button class="btn block" type="submit"' + (state.busy ? ' disabled' : '') + '>' + (state.busy ? 'Envoi…' : 'Recevoir le mail') + '</button>' +
+      '<p><button type="button" class="text-btn" data-act="showLogin">Retour à la connexion</button></p></form>');
+  }
+
+  function renderChoosePassword() {
+    document.body.dataset.role = 'login';
+    authFrame('<form id="password-form"><h1 class="poster-title">Choisissez votre mot de passe</h1>' +
+      '<p class="hint">Au moins 8 caractères. C\'est lui qui servira pour vos prochaines connexions.</p>' +
+      (state.error ? '<div class="error" role="alert">' + esc(state.error) + '</div>' : '') +
+      '<label class="field"><span>Nouveau mot de passe</span><input type="password" name="password" autocomplete="new-password" minlength="8" required></label>' +
+      '<label class="field"><span>Confirmation</span><input type="password" name="confirm" autocomplete="new-password" minlength="8" required></label>' +
+      '<button class="btn block" type="submit"' + (state.busy ? ' disabled' : '') + '>' + (state.busy ? 'Enregistrement…' : 'Enregistrer') + '</button>' +
+      '<p><button type="button" class="text-btn" data-act="cancelPassword">Annuler</button></p></form>');
+  }
+
+  function doForgot(identifiant) {
+    state.busy = true;
+    state.error = '';
+    state.loginNom = identifiant;
+    renderForgot();
+    api.call('forgot', { identifiant: identifiant }).then(function () {
+      state.authView = 'sent';
+    }).catch(function (err) {
+      state.error = err.message;
+    }).then(function () {
+      state.busy = false;
+      renderForgot();
+    });
+  }
+
+  function doChoosePassword(form) {
+    if (form.password.value !== form.confirm.value) {
+      state.error = 'Les deux mots de passe sont différents.';
+      renderChoosePassword();
+      return;
+    }
+    state.busy = true;
+    state.error = '';
+    var password = form.password.value;
+    renderChoosePassword();
+    var call = state.resetToken
+      ? api.call('resetPassword', { resetToken: state.resetToken, password: password })
+      : api.call('setPassword', { password: password }, state.session.token);
+    call.then(function (res) {
+      state.busy = false;
+      state.resetToken = null;
+      state.data = null;
+      state.session = res;
+      write(CACHE_KEY, null);
+      write(SESSION_KEY, res);
+      return refresh();
+    }).catch(function (err) {
+      state.busy = false;
+      if (err.code === 'badlink') {
+        state.resetToken = null;
+        state.authView = 'forgot';
+        state.error = err.message;
+        render();
+        return;
+      }
+      if (err.code === 'auth') {
+        logout();
+        toast(err.message);
+        return;
+      }
+      state.error = err.message;
+      renderChoosePassword();
+    });
+  }
+
   function renderLogin() {
     document.body.dataset.role = 'login';
+    if (state.authView !== 'login') {
+      renderForgot();
+      return;
+    }
     var demo = api.isDemo
       ? '<div class="demo-box"><p><b>Mode démo.</b> Mot de passe : <b>demo</b></p><div class="demo-actions">' +
         '<button type="button" class="btn small ghost" data-act="demoLogin" data-nom="Lou Bernard">Bénévole</button>' +
@@ -260,20 +367,25 @@
       '<div class="hero">' + logo(false) + '</div>' +
       '<form class="login" id="login-form"><h1 class="poster-title">Espace bénévoles</h1>' +
       (state.error ? '<div class="error" role="alert">' + esc(state.error) + '</div>' : '') +
-      '<label class="field"><span>Nom</span><input type="text" name="nom" autocomplete="username" autocapitalize="words" required></label>' +
+      '<label class="field"><span>Nom ou adresse mail</span><input type="text" name="nom" autocomplete="username" autocapitalize="none" required value="' + esc(state.loginNom) + '"></label>' +
       '<label class="field"><span>Mot de passe</span><input type="password" name="password" autocomplete="current-password" required></label>' +
       '<button class="btn block" type="submit"' + (state.busy ? ' disabled' : '') + '>' + (state.busy ? 'Connexion…' : 'Se connecter') + '</button>' +
-      '<p class="hint">Mot de passe oublié ? Contactez votre référent de pôle.</p>' + demo + '</form></div></div>';
+      '<p><button type="button" class="text-btn" data-act="showForgot">Première connexion ou mot de passe oublié ?</button></p>' + demo + '</form></div></div>';
   }
 
   function doLogin(nom, password) {
     state.busy = true;
     state.error = '';
+    state.loginNom = nom;
     renderLogin();
     api.call('login', { nom: nom, password: password }).then(function (res) {
       state.session = res;
       write(SESSION_KEY, res);
       state.busy = false;
+      if (res.mustChange) {
+        render();
+        return null;
+      }
       return refresh();
     }).catch(function (err) {
       state.busy = false;
@@ -379,6 +491,7 @@
   function managerFilters() {
     var d = state.data;
     var html = '';
+    ensureDay();
     if (d.poles.length > 1) {
       html += '<div class="chips" aria-label="Filtrer par pôle"><button class="chip" data-act="filterPole" data-v="" aria-pressed="' + !state.filterPole + '">Tous</button>' +
         d.poles.map(function (p) {
@@ -387,7 +500,7 @@
     }
     var days = unique(d.shifts.map(festivalDay));
     if (days.length > 1) {
-      html += '<div class="chips" aria-label="Filtrer par jour"><button class="chip" data-act="filterDay" data-v="" aria-pressed="' + !state.filterDay + '">Tous les jours</button>' +
+      html += '<div class="chips" aria-label="Choisir le jour">' +
         days.map(function (x) {
           return '<button class="chip" data-act="filterDay" data-v="' + esc(x) + '" aria-pressed="' + (state.filterDay === x) + '">' + esc(dayShort(x)) + '</button>';
         }).join('') + '</div>';
@@ -395,12 +508,80 @@
     return html;
   }
 
+  // Le calendrier montre un jour à la fois : aujourd'hui pendant le festival, sinon le premier jour.
+  function ensureDay() {
+    var days = unique(state.data.shifts.map(festivalDay));
+    if (days.indexOf(state.filterDay) !== -1) return;
+    var d = new Date();
+    var today = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    state.filterDay = days.indexOf(today) !== -1 ? today : days[0] || '';
+  }
+
+  function calendarBlock(s, lane, rowOf, now) {
+    var missing = s.nbRequis ? s.nbRequis - s.benevoleIds.length : 0;
+    var names = s.benevoleIds.map(function (id) {
+      var b = benevole(id);
+      return b ? firstName(b.nom) : '';
+    }).filter(String);
+    var count = s.nbRequis ? s.benevoleIds.length + '/' + s.nbRequis : String(s.benevoleIds.length);
+    return '<button class="cal-block' + (missing > 0 ? ' short' : '') + (s.end <= now ? ' past' : '') + '" data-act="openShift" data-id="' + esc(s.id) + '"' +
+      ' style="grid-column:' + lane + ';grid-row:' + rowOf(s.start) + ' / ' + rowOf(s.end) + '"' +
+      ' aria-label="' + esc(s.pole + ', ' + s.intitule + ', ' + time(s.debut) + ' à ' + time(s.fin) + ', ' + count + (missing > 0 ? ', manque ' + missing : ', complet')) + '">' +
+      '<b>' + esc(count) + (missing > 0 ? ' · manque ' + missing : '') + '</b>' +
+      '<span>' + esc(names.join(', ')) + '</span></button>';
+  }
+
+  function calendar(shifts) {
+    var SLOT = 30;
+    var min = Math.min.apply(null, shifts.map(function (s) { return s.start; }));
+    var max = Math.max.apply(null, shifts.map(function (s) { return s.end; }));
+    min -= min % 60;
+    function rowOf(minutes) { return Math.round((minutes - min) / SLOT) + 2; }
+
+    // Une colonne par rôle, avec une colonne de plus si deux shifts du même rôle se chevauchent.
+    var columns = [];
+    var poleOrder = unique(shifts.map(function (s) { return s.pole; }));
+    var placed = [];
+    poleOrder.forEach(function (pole) {
+      unique(shifts.filter(function (s) { return s.pole === pole; }).map(function (s) { return s.intitule; })).forEach(function (role) {
+        var lanes = [];
+        shifts.filter(function (s) { return s.pole === pole && s.intitule === role; }).forEach(function (s) {
+          var i = 0;
+          while (lanes[i] !== undefined && lanes[i] > s.start) i++;
+          lanes[i] = s.end;
+          if (!columns.some(function (c) { return c.pole === pole && c.role === role && c.lane === i; })) {
+            columns.push({ pole: pole, role: role, lane: i });
+          }
+          placed.push({ shift: s, pole: pole, role: role, lane: i });
+        });
+      });
+    });
+    function columnIndex(p) {
+      for (var i = 0; i < columns.length; i++) {
+        if (columns[i].pole === p.pole && columns[i].role === p.role && columns[i].lane === p.lane) return i + 2;
+      }
+      return 2;
+    }
+
+    var html = '<div class="cal-corner"></div>' + columns.map(function (c, i) {
+      return '<div class="cal-head" style="grid-column:' + (i + 2) + '"><small>' + esc(c.pole) + '</small>' + esc(c.role) + '</div>';
+    }).join('');
+    for (var t = min; t < max; t += 60) {
+      var h = Math.floor(t / 60) % 24;
+      html += '<div class="cal-hour" style="grid-row:' + rowOf(t) + ' / ' + rowOf(t + 60) + '">' + h + 'h</div>';
+      html += '<div class="cal-line" style="grid-column:2 / ' + (columns.length + 2) + ';grid-row:' + rowOf(t) + ' / ' + rowOf(t + 60) + '"></div>';
+    }
+    var now = nowMinutes();
+    html += placed.map(function (p) { return calendarBlock(p.shift, columnIndex(p), rowOf, now); }).join('');
+    return '<div class="cal" id="calendar"><div class="cal-grid" style="grid-template-columns:42px repeat(' + columns.length + ',minmax(96px,1fr));grid-template-rows:auto repeat(' + Math.round((max - min) / SLOT) + ',24px)">' + html + '</div></div>' +
+      '<p class="hint">Touchez un créneau pour voir et modifier les bénévoles.</p>';
+  }
+
   function managerShifts() {
+    var filters = managerFilters();
     var shifts = visibleShifts();
-    return '<h1 class="section-title">Shifts du pôle</h1>' + managerFilters() + (shifts.length
-      ? groupByDay(shifts, function (s) {
-        return ticket(s, { href: true, extra: staffingPill(s) });
-      })
+    return '<h1 class="section-title">Shifts du pôle</h1>' + filters + (shifts.length
+      ? calendar(shifts)
       : '<div class="empty"><b>Aucun shift</b>Rien de prévu avec ces filtres.</div>');
   }
 
@@ -599,13 +780,24 @@
 
   function render() {
     var y = window.scrollY;
+    if (state.resetToken || (state.session && state.session.mustChange)) {
+      renderChoosePassword();
+      return;
+    }
     if (!state.session) {
       renderLogin();
       return;
     }
+    var cal = document.getElementById('calendar');
+    if (cal) state.calScroll = { x: cal.scrollLeft, y: cal.scrollTop };
     document.body.dataset.role = state.session.user.role;
     if (state.session.user.role === 'manager') renderManager();
     else renderBenevole();
+    cal = document.getElementById('calendar');
+    if (cal && state.calScroll) {
+      cal.scrollLeft = state.calScroll.x;
+      cal.scrollTop = state.calScroll.y;
+    }
     window.scrollTo(0, y);
   }
 
@@ -631,7 +823,26 @@
       api.resetDemo().then(function () { toast('Données de démo réinitialisées.'); });
     },
     filterPole: function (el) { state.filterPole = el.dataset.v; render(); },
-    filterDay: function (el) { state.filterDay = el.dataset.v; render(); },
+    filterDay: function (el) { state.filterDay = el.dataset.v; state.calScroll = null; render(); },
+    showForgot: function () {
+      var field = document.querySelector('#login-form [name=nom]');
+      if (field) state.loginNom = field.value;
+      state.error = '';
+      state.authView = 'forgot';
+      renderLogin();
+    },
+    showLogin: function () {
+      state.error = '';
+      state.authView = 'login';
+      renderLogin();
+    },
+    cancelPassword: function () {
+      state.resetToken = null;
+      state.error = '';
+      state.authView = 'login';
+      if (state.session && state.session.mustChange) logout();
+      else render();
+    },
     openShift: function (el) { state.selected = {}; push({ type: 'shift', id: el.dataset.id }); },
     openBenevole: function (el) { push({ type: 'benevole', id: el.dataset.id }); },
     selectAll: function (el) {
@@ -729,9 +940,10 @@
   });
 
   document.addEventListener('submit', function (e) {
-    if (e.target.id !== 'login-form') return;
     e.preventDefault();
-    doLogin(e.target.nom.value, e.target.password.value);
+    if (e.target.id === 'login-form') doLogin(e.target.nom.value, e.target.password.value);
+    else if (e.target.id === 'forgot-form') doForgot(e.target.identifiant.value);
+    else if (e.target.id === 'password-form') doChoosePassword(e.target);
   });
 
   document.addEventListener('visibilitychange', function () {
@@ -741,7 +953,7 @@
   /* ---------- Démarrage ---------- */
 
   render();
-  if (state.session) refresh(!!state.data);
+  if (state.session && !state.resetToken) refresh(!!state.data);
   if ('serviceWorker' in navigator && location.protocol.indexOf('http') === 0) {
     navigator.serviceWorker.register('sw.js');
   }

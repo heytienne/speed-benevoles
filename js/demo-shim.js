@@ -88,6 +88,10 @@
       return { setMimeType: function () { return { getContent: function () { return s; } }; } };
     }
   };
+  // Aucun vrai mail en démo : le contenu s'affiche à l'écran.
+  window.MailApp = {
+    sendEmail: function (mail) { window.alert('Mail à ' + mail.to + '\n\n' + mail.body); }
+  };
   window.Session = { getScriptTimeZone: function () { return 'Europe/Paris'; } };
   window.Utilities = {
     DigestAlgorithm: { SHA_256: 'sha' }, Charset: { UTF_8: 'utf8' },

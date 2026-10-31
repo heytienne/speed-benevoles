@@ -14,7 +14,7 @@ var SHEETS = {
 };
 
 var HEADERS = {
-  Utilisateurs: ['id', 'nom', 'telephone', 'email', 'genre', 'mot_de_passe', 'poles'],
+  Utilisateurs: ['id', 'nom', 'telephone', 'email', 'genre', 'mot_de_passe', 'poles', 'mdp_choisi', 'mdp_temp', 'reset_hash', 'reset_expire'],
   Shifts: ['id', 'pole', 'intitule', 'date', 'debut', 'fin', 'lieu', 'nb_requis'],
   Affectations: ['shift_id', 'benevole_id'],
   Commentaires: ['id', 'benevole_id', 'manager_id', 'manager_nom', 'date', 'texte'],
@@ -26,6 +26,11 @@ var TOKEN_DAYS = 14;
 var HASH_ROUNDS = 200;
 var MAX_LOGIN_FAILS = 5;
 var LOCK_SECONDS = 900;
+// Adresse fixe de l'appli : un lien de mail ne doit jamais dépendre de ce qu'envoie le client.
+var APP_URL = 'https://heytienne.github.io/speed-benevoles/';
+var RESET_HOURS = 24;
+var MAIL_COOLDOWN_SECONDS = 300;
+var MIN_PASSWORD_LENGTH = 8;
 
 /* ---------- Point d'entrée HTTP ---------- */
 
@@ -61,8 +66,12 @@ function fail_(message, code, details) {
 }
 
 function route_(req) {
-  if (req.action === 'login') return login_(req);
+  if (req.action === 'login') return withLock_(function () { return login_(req); });
+  if (req.action === 'forgot') return withLock_(function () { return forgot_(req); });
+  if (req.action === 'resetPassword') return withLock_(function () { return resetPassword_(req); });
   var user = authenticate_(req.token);
+  if (req.action === 'setPassword') return withLock_(function () { return setPassword_(user, req); });
+  if (!hasChosenPassword_(user)) fail_('Choisissez votre mot de passe.', 'mustChange');
   switch (req.action) {
     case 'dashboard':
       return isManager_(user) ? managerDashboard_(user) : benevoleDashboard_(user);
@@ -254,46 +263,159 @@ function checkPassword_(stored, password) {
   return hash_(password, parts[1]) === parts[2];
 }
 
+function findByIdentifier_(identifiant) {
+  var key = normName_(identifiant);
+  if (!key) return [];
+  return loadUsers_().filter(function (u) {
+    return normName_(u.nom) === key || (u.email && normName_(u.email) === key);
+  });
+}
+
+function hasChosenPassword_(user) {
+  return normName_(user.mdp_choisi) === 'oui';
+}
+
+// Écrit par nom de colonne et crée celles qui manquent dans un Sheet créé avant leur ajout.
+function setUserFields_(user, fields) {
+  var s = sheet_(SHEETS.USERS);
+  var headers = s.getDataRange().getValues()[0].map(function (h) { return String(h).trim().toLowerCase(); });
+  Object.keys(fields).forEach(function (name) {
+    var col = headers.indexOf(name) + 1;
+    if (!col) {
+      headers.push(name);
+      col = headers.length;
+      s.getRange(1, col).setValue(name);
+    }
+    s.getRange(user._row, col).setValue(fields[name]);
+    user[name] = fields[name];
+  });
+}
+
+// La signature dépend du mot de passe : en changer ferme les sessions ouvertes ailleurs.
+function sessionSignature_(payload, user) {
+  return sign_(payload + '|' + str_(user.mot_de_passe));
+}
+
+function session_(user) {
+  var payload = encodeURIComponent(user.id) + '.' + (Date.now() + TOKEN_DAYS * 86400000);
+  return {
+    token: payload + '.' + sessionSignature_(payload, user),
+    user: publicUser_(user),
+    mustChange: !hasChosenPassword_(user)
+  };
+}
+
+function checkTempPassword_(user, password) {
+  return Number(user.reset_expire) > Date.now() && str_(user.mdp_temp) !== '' && checkPassword_(user.mdp_temp, password);
+}
+
 function login_(req) {
   var name = normName_(req.nom);
   var password = String(req.password === undefined ? '' : req.password).trim();
-  if (!name || !password) fail_('Renseignez votre nom et votre mot de passe.');
+  if (!name || !password) fail_('Renseignez votre identifiant et votre mot de passe.');
 
+  var candidates = findByIdentifier_(name);
   var cache = CacheService.getScriptCache();
-  var failKey = 'fail_' + Utilities.base64EncodeWebSafe(name).slice(0, 200);
+  // Le compteur suit le compte, pour qu'alterner nom et adresse mail ne donne pas d'essais en plus.
+  var failKey = 'fail_' + Utilities.base64EncodeWebSafe(candidates.length ? candidates[0].id : name).slice(0, 200);
   var fails = Number(cache.get(failKey)) || 0;
   if (fails >= MAX_LOGIN_FAILS) fail_('Trop de tentatives. Réessayez dans 15 minutes.', 'locked');
 
-  var candidates = loadUsers_().filter(function (u) { return normName_(u.nom) === name; });
   var user = null;
+  var viaTemp = false;
   candidates.forEach(function (u) {
-    if (!user && checkPassword_(u.mot_de_passe, password)) user = u;
+    if (user) return;
+    if (checkPassword_(u.mot_de_passe, password)) {
+      user = u;
+    } else if (checkTempPassword_(u, password)) {
+      user = u;
+      viaTemp = true;
+    }
   });
   if (!user) {
     cache.put(failKey, String(fails + 1), LOCK_SECONDS);
-    fail_('Nom ou mot de passe incorrect.', 'auth');
+    fail_('Identifiant ou mot de passe incorrect.', 'auth');
   }
   cache.remove(failKey);
 
+  var fields = {};
   // Un mot de passe encore en clair dans le Sheet est chiffré dès la première connexion.
-  if (str_(user.mot_de_passe).indexOf('sha256$') !== 0) {
-    var col = HEADERS.Utilisateurs.indexOf('mot_de_passe') + 1;
-    sheet_(SHEETS.USERS).getRange(user._row, col).setValue(makeHash_(password));
-  }
-
-  var payload = encodeURIComponent(user.id) + '.' + (Date.now() + TOKEN_DAYS * 86400000);
-  return { token: payload + '.' + sign_(payload), user: publicUser_(user) };
+  if (!viaTemp && str_(user.mot_de_passe).indexOf('sha256$') !== 0) fields.mot_de_passe = makeHash_(password);
+  if (viaTemp) fields.mdp_choisi = '';
+  if (Object.keys(fields).length) setUserFields_(user, fields);
+  return session_(user);
 }
 
 function authenticate_(token) {
   var parts = str_(token).split('.');
   if (parts.length !== 3) fail_('Session expirée.', 'auth');
   var payload = parts[0] + '.' + parts[1];
-  if (sign_(payload) !== parts[2] || Number(parts[1]) < Date.now()) fail_('Session expirée.', 'auth');
+  if (Number(parts[1]) < Date.now()) fail_('Session expirée.', 'auth');
   var id = decodeURIComponent(parts[0]);
   var user = loadUsers_().filter(function (u) { return u.id === id; })[0];
-  if (!user) fail_('Session expirée.', 'auth');
+  if (!user || sessionSignature_(payload, user) !== parts[2]) fail_('Session expirée.', 'auth');
   return user;
+}
+
+function tokenHash_(token) {
+  return 'h' + Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, token, Utilities.Charset.UTF_8));
+}
+
+// Première connexion et mot de passe oublié. L'ancien mot de passe reste valable tant que le
+// nouveau n'est pas choisi, et la réponse est identique que le compte existe ou non.
+function forgot_(req) {
+  var cache = CacheService.getScriptCache();
+  findByIdentifier_(req.identifiant).forEach(function (user) {
+    if (!user.email) return;
+    var key = 'mail_' + Utilities.base64EncodeWebSafe(user.id);
+    if (cache.get(key)) return;
+    try {
+      var temp = 'speed-' + Utilities.getUuid().replace(/-/g, '').slice(0, 10);
+      var token = Utilities.getUuid() + '-' + Utilities.getUuid();
+      setUserFields_(user, {
+        mdp_temp: makeHash_(temp),
+        reset_hash: tokenHash_(token),
+        reset_expire: Date.now() + RESET_HOURS * 3600000
+      });
+      MailApp.sendEmail({
+        to: user.email,
+        name: 'Speed Festival',
+        subject: 'Speed Festival : ton mot de passe',
+        body: 'Salut ' + user.nom.split(' ')[0] + ' !\n\n' +
+          'Voici ton mot de passe temporaire pour l\'appli bénévoles : ' + temp + '\n\n' +
+          'Pour choisir ton propre mot de passe, ouvre ce lien :\n' + APP_URL + '#reset=' + token + '\n\n' +
+          'Le mot de passe temporaire et le lien sont valables ' + RESET_HOURS + ' heures. ' +
+          'Si tu n\'as rien demandé, ignore ce message : ton compte ne change pas.\n\nL\'équipe du Speed Festival'
+      });
+      cache.put(key, '1', MAIL_COOLDOWN_SECONDS);
+    } catch (err) {
+      console.error(err);
+    }
+  });
+  return { sent: true };
+}
+
+function applyPassword_(user, password) {
+  var pwd = String(password === undefined ? '' : password).trim();
+  if (pwd.length < MIN_PASSWORD_LENGTH) fail_('Choisissez au moins ' + MIN_PASSWORD_LENGTH + ' caractères.');
+  setUserFields_(user, { mot_de_passe: makeHash_(pwd), mdp_choisi: 'oui', mdp_temp: '', reset_hash: '', reset_expire: '' });
+  return session_(user);
+}
+
+function resetPassword_(req) {
+  var token = str_(req.resetToken);
+  var hash = token ? tokenHash_(token) : '';
+  var user = loadUsers_().filter(function (u) {
+    return hash && str_(u.reset_hash) === hash && Number(u.reset_expire) > Date.now();
+  })[0];
+  if (!user) fail_("Ce lien n'est plus valable. Demandez-en un nouveau.", 'badlink');
+  return applyPassword_(user, req.password);
+}
+
+// Réservé au mot de passe imposé après une connexion avec un mot de passe provisoire.
+function setPassword_(user, req) {
+  if (hasChosenPassword_(user)) fail_('Votre mot de passe est déjà choisi.', 'forbidden');
+  return applyPassword_(user, req.password);
 }
 
 function publicUser_(u) {
@@ -545,14 +667,15 @@ function seedExample_(j1, j2) {
     rows.forEach(function (r) { s.appendRow(r); });
   }
   fill(SHEETS.USERS, [
-    ['M1', 'Camille Martin', '0601020304', 'camille@exemple.fr', 'manager', 'demo', 'Bar, Accueil'],
-    ['M2', 'Sacha Petit', '0605060708', 'sacha@exemple.fr', 'manager', 'demo', 'Technique'],
-    ['B1', 'Lou Bernard', '0611111111', 'lou@exemple.fr', 'bénévole', 'demo', ''],
-    ['B2', 'Noa Durand', '0622222222', 'noa@exemple.fr', 'bénévole', 'demo', ''],
-    ['B3', 'Alex Moreau', '0633333333', 'alex@exemple.fr', 'bénévole', 'demo', ''],
-    ['B4', 'Charlie Roux', '0644444444', 'charlie@exemple.fr', 'bénévole', 'demo', ''],
-    ['B5', 'Maé Fournier', '0655555555', 'mae@exemple.fr', 'bénévole', 'demo', ''],
-    ['B6', 'Robin Girard', '0666666666', 'robin@exemple.fr', 'bénévole', 'demo', '']
+    // Numéros 06 39 98 xx xx : réservés par l'ARCEP aux fictions.
+    ['M1', 'Camille Martin', '0639980101', 'camille@exemple.fr', 'manager', 'demo', 'Bar, Accueil', 'oui'],
+    ['M2', 'Sacha Petit', '0639980102', 'sacha@exemple.fr', 'manager', 'demo', 'Technique', 'oui'],
+    ['B1', 'Lou Bernard', '0639980111', 'lou@exemple.fr', 'bénévole', 'demo', '', 'oui'],
+    ['B2', 'Noa Durand', '0639980112', 'noa@exemple.fr', 'bénévole', 'demo', '', 'oui'],
+    ['B3', 'Alex Moreau', '0639980113', 'alex@exemple.fr', 'bénévole', 'demo', '', 'oui'],
+    ['B4', 'Charlie Roux', '0639980114', 'charlie@exemple.fr', 'bénévole', 'demo', '', 'oui'],
+    ['B5', 'Maé Fournier', '0639980115', 'mae@exemple.fr', 'bénévole', 'demo', '', 'oui'],
+    ['B6', 'Robin Girard', '0639980116', 'robin@exemple.fr', 'bénévole', 'demo', '', 'oui']
   ]);
   fill(SHEETS.SHIFTS, [
     ['S1', 'Bar', 'Bar principal', j1, '17:00', '21:00', 'Scène A', 3],
@@ -572,6 +695,13 @@ function seedExample_(j1, j2) {
     ['T2', 'Point de rendez-vous', 'Salut {prenom}, changement de point de rendez-vous pour « {shift} » : merci de contacter ton référent.'],
     ['T3', 'Besoin de renfort', 'Salut {prenom}, on a besoin de renfort sur le pôle. Tu es disponible ? Réponds à ce SMS, merci !']
   ]);
+}
+
+// A exécuter une fois depuis l'éditeur : accorde l'autorisation d'envoi et vérifie le quota.
+function testerEnvoiMail() {
+  var moi = Session.getEffectiveUser().getEmail();
+  MailApp.sendEmail(moi, 'Speed Festival : test d\'envoi', 'Si tu lis ce message, l\'envoi de mails fonctionne.');
+  console.log('Mail envoyé à ' + moi + '. Envois restants aujourd\'hui : ' + MailApp.getRemainingDailyQuota());
 }
 
 // Chiffre les mots de passe encore en clair. A relancer si le message le demande.
