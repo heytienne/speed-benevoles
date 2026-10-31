@@ -10,11 +10,13 @@ var SHEETS = {
   ASSIGN: 'Affectations',
   COMMENTS: 'Commentaires',
   SMS: 'ModelesSMS',
-  LOG: 'Journal'
+  LOG: 'Journal',
+  ROLES: 'PolesRoles'
 };
 
 var HEADERS = {
-  Utilisateurs: ['id', 'nom', 'telephone', 'email', 'genre', 'mot_de_passe', 'poles', 'mdp_choisi', 'mdp_temp', 'reset_hash', 'reset_expire'],
+  Utilisateurs: ['id', 'nom', 'telephone', 'email', 'genre', 'mot_de_passe', 'poles', 'mdp_choisi', 'mdp_temp', 'reset_hash', 'reset_expire', 'souhaits', 'binome'],
+  PolesRoles: ['pole', 'role', 'besoin', 'format'],
   Shifts: ['id', 'pole', 'intitule', 'date', 'debut', 'fin', 'lieu', 'nb_requis'],
   Affectations: ['shift_id', 'benevole_id'],
   Commentaires: ['id', 'benevole_id', 'manager_id', 'manager_nom', 'date', 'texte'],
@@ -179,6 +181,23 @@ function requireManager_(user) {
   return user;
 }
 
+function wishKey_(pole, role) {
+  return normName_(pole) + '|' + normName_(role);
+}
+
+// Souhaits écrits "Pôle : Rôle", séparés par des virgules.
+function parseWishes_(v) {
+  return splitPoles_(v).map(function (w) {
+    var parts = w.split(':');
+    return { label: w, key: parts.length === 2 ? wishKey_(parts[0], parts[1]) : '' };
+  });
+}
+
+function hasWish_(user, shift) {
+  var key = wishKey_(shift.pole, shift.intitule);
+  return user.wishes.some(function (w) { return w.key === key; });
+}
+
 function loadUsers_() {
   return readTable_(SHEETS.USERS).map(function (u) {
     u.id = str_(u.id);
@@ -186,6 +205,7 @@ function loadUsers_() {
     u.telephone = normPhone_(u.telephone);
     u.email = str_(u.email);
     u.poleList = splitPoles_(u.poles);
+    u.wishes = parseWishes_(u.souhaits);
     return u;
   }).filter(function (u) { return u.id && u.nom; });
 }
@@ -495,6 +515,7 @@ function managerDashboard_(user) {
   }).map(function (s) {
     var copy = JSON.parse(JSON.stringify(s));
     copy.benevoleIds = onShift[s.id] || [];
+    copy.candidats = benevoles.filter(function (b) { return hasWish_(b, s); }).map(function (b) { return b.id; });
     return copy;
   });
 
@@ -522,6 +543,10 @@ function managerDashboard_(user) {
       var c = contact_(b);
       c.busy = busy[b.id] || [];
       c.surMesPoles = !!onMyPoles[b.id];
+      c.souhaits = b.wishes.map(function (w) { return w.label; });
+      var binome = benevoles.filter(function (o) { return o.id !== b.id && normName_(o.nom) === normName_(b.binome); })[0];
+      c.binomeId = binome ? binome.id : '';
+      c.binomeNom = binome ? binome.nom : str_(b.binome);
       return c;
     }).sort(function (a, b) { return a.nom.localeCompare(b.nom); }),
     comments: comments,
@@ -541,6 +566,13 @@ function requireBenevole_(id) {
   var b = loadUsers_().filter(function (u) { return u.id === str_(id) && !isManager_(u); })[0];
   if (!b) fail_('Bénévole introuvable.', 'notfound');
   return b;
+}
+
+// Règle stricte, sans confirmation possible : un bénévole ne va que sur un poste qu'il a souhaité.
+function requireWish_(shift, benevole) {
+  if (!hasWish_(benevole, shift)) {
+    fail_(benevole.nom + ' n\'a pas « ' + shift.pole + ' : ' + shift.intitule + ' » dans ses souhaits.', 'wish');
+  }
 }
 
 // Refuse un chevauchement d'horaires, sauf si le manager a confirmé (force).
@@ -567,6 +599,7 @@ function assign_(user, req) {
     return a.shiftId === shift.id && a.benevoleId === benevole.id;
   });
   if (existing.length) fail_(benevole.nom + ' est déjà sur ce shift.');
+  requireWish_(shift, benevole);
   checkConflict_(shift, benevole, null, req.force);
   sheet_(SHEETS.ASSIGN).appendRow([shift.id, benevole.id]);
   log_(user, 'ajout', benevole.nom + ' sur ' + shift.id + ' (' + shift.intitule + ')');
@@ -598,6 +631,7 @@ function replace_(user, req) {
     return a.shiftId === shift.id && a.benevoleId === newB.id;
   });
   if (dup) fail_(newB.nom + ' est déjà sur ce shift.');
+  requireWish_(shift, newB);
   checkConflict_(shift, newB, null, req.force);
   sheet_(SHEETS.ASSIGN).getRange(row._row, 2).setValue(newB.id);
   log_(user, 'remplacement', oldB.nom + ' -> ' + newB.nom + ' sur ' + shift.id + ' (' + shift.intitule + ')');
@@ -677,6 +711,12 @@ function seedExample_(j1, j2) {
     ['B5', 'Maé Fournier', '0639980115', 'mae@exemple.fr', 'bénévole', 'demo', '', 'oui'],
     ['B6', 'Robin Girard', '0639980116', 'robin@exemple.fr', 'bénévole', 'demo', '', 'oui']
   ]);
+  loadUsers_().forEach(function (u) {
+    if (isManager_(u)) return;
+    setUserFields_(u, {
+      souhaits: 'Bar : Bar principal, Bar : Bar camping, Accueil : Entrée festival, Technique : Montage scène, Technique : Démontage'
+    });
+  });
   fill(SHEETS.SHIFTS, [
     ['S1', 'Bar', 'Bar principal', j1, '17:00', '21:00', 'Scène A', 3],
     ['S2', 'Bar', 'Bar principal', j1, '21:00', '01:00', 'Scène A', 3],

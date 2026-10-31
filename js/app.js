@@ -594,7 +594,8 @@
     var n = commentCount(b.id);
     return '<div class="row"><input type="checkbox" data-act="toggle" data-id="' + esc(b.id) + '" aria-label="Sélectionner ' + esc(b.nom) + '"' + checked + '>' +
       '<div class="grow"><button class="link-btn" data-act="openBenevole" data-id="' + esc(b.id) + '"><div class="name">' + esc(b.nom) + '</div>' +
-      '<div class="sub">' + esc(b.telephone) + (n ? ' · ' + plural(n, 'commentaire') : '') + '</div></button></div>' +
+      '<div class="sub">' + esc(b.telephone) + (n ? ' · ' + plural(n, 'commentaire') : '') + '</div>' +
+      (options && options.note ? '<div class="sub">' + options.note + '</div>' : '') + '</button></div>' +
       (options && options.actions ? '<div class="row-actions">' + options.actions + '</div>' : '') + '</div>';
   }
 
@@ -619,7 +620,14 @@
     var rows = s.benevoleIds.map(function (id) {
       var b = benevole(id);
       if (!b) return '';
+      var note = '';
+      if (b.binomeId) {
+        note = s.benevoleIds.indexOf(b.binomeId) !== -1
+          ? 'Avec son binôme ' + esc(firstName(b.binomeNom))
+          : '<span class="pill warn">Binôme ' + esc(firstName(b.binomeNom)) + ' pas sur ce shift</span>';
+      }
       return benevoleRow(b, {
+        note: note,
         actions: '<button class="btn small ghost" data-act="pickReplace" data-id="' + esc(id) + '">Changer</button>' +
           '<button class="icon-btn" data-act="remove" data-id="' + esc(id) + '" aria-label="Retirer ' + esc(b.nom) + '">✕</button>'
       });
@@ -641,16 +649,20 @@
   function pickerList(view) {
     var s = shiftById(view.shiftId);
     var q = state.search.trim().toLowerCase();
+    // Seuls les bénévoles ayant ce poste dans leurs souhaits sont proposés, binômes présents en tête.
     var list = state.data.benevoles.filter(function (b) {
-      return s.benevoleIds.indexOf(b.id) === -1 && (!q || b.nom.toLowerCase().indexOf(q) !== -1);
-    }).map(function (b) { return { b: b, conflict: isFree(b, s) }; }).sort(function (a, b) {
-      return (a.conflict ? 1 : 0) - (b.conflict ? 1 : 0);
+      return s.candidats.indexOf(b.id) !== -1 && s.benevoleIds.indexOf(b.id) === -1 && (!q || b.nom.toLowerCase().indexOf(q) !== -1);
+    }).map(function (b) {
+      return { b: b, conflict: isFree(b, s), duo: b.binomeId && s.benevoleIds.indexOf(b.binomeId) !== -1 && b.binomeId !== view.oldId };
+    }).sort(function (a, b) {
+      return (a.conflict ? 2 : 0) - (b.conflict ? 2 : 0) + (a.duo ? 0 : 1) - (b.duo ? 0 : 1);
     });
-    if (!list.length) return '<div class="empty">Aucun bénévole trouvé.</div>';
+    if (!list.length) return '<div class="empty">Aucun bénévole disponible n\'a ce poste dans ses souhaits.</div>';
     return list.map(function (it) {
       var label = it.conflict
         ? '<span class="pill warn">Déjà sur ' + esc(it.conflict.intitule) + ' ' + esc(time(it.conflict.debut)) + '-' + esc(time(it.conflict.fin)) + '</span>'
         : '<span class="pill">Libre</span>';
+      if (it.duo) label += ' <span class="pill now">Binôme ' + esc(firstName(it.b.binomeNom)) + ' sur ce shift</span>';
       return '<div class="row"><button class="link-btn" data-act="pick" data-id="' + esc(it.b.id) + '"><div class="name">' + esc(it.b.nom) + '</div>' + label + '</button></div>';
     }).join('');
   }
@@ -660,6 +672,7 @@
     if (!s) return '<div class="empty"><b>Shift introuvable</b></div>';
     var title = view.oldId ? 'Remplacer ' + firstName(benevole(view.oldId).nom) : 'Ajouter un bénévole';
     return '<h1 class="section-title">' + esc(title) + '</h1><p class="hint">' + esc(s.intitule) + ' · ' + esc(dayShort(festivalDay(s))) + ' · ' + esc(time(s.debut)) + ' → ' + esc(time(s.fin)) + '</p>' +
+      '<p class="hint">Seuls les bénévoles ayant ce poste dans leurs souhaits sont proposés.</p>' +
       '<input type="search" id="picker-search" placeholder="Rechercher un nom" aria-label="Rechercher un bénévole" value="' + esc(state.search) + '">' +
       '<div id="picker-list" style="margin-top:6px">' + pickerList(view) + '</div>';
   }
@@ -673,6 +686,10 @@
     var me = state.session.user.id;
     return '<section class="card"><h3>' + esc(b.nom) + '</h3><div class="sub">' + esc(b.telephone) + (b.email ? ' · ' + esc(b.email) : '') + '</div>' +
       '<div class="contact-actions">' + contactButtons(b) + '</div></section>' +
+      '<section class="card"><h3>Souhaits</h3>' + (b.souhaits.length
+        ? '<p class="hint">Affectation possible uniquement sur ces postes.</p><div class="contact-actions">' + b.souhaits.map(function (w) { return '<span class="pill">' + esc(w) + '</span>'; }).join(' ') + '</div>'
+        : '<p class="hint">Aucun souhait renseigné : affectation impossible.</p>') +
+      '<p><b>Binôme souhaité :</b> ' + (b.binomeNom ? esc(b.binomeNom) : 'aucun') + '</p></section>' +
       '<section class="card"><h3>Ses shifts</h3>' + (b.busy.length ? b.busy.map(function (x) {
         return '<div class="row" style="min-height:0"><div class="grow"><div class="name">' + esc(x.intitule) + '</div><div class="sub">' +
           esc(x.pole) + ' · ' + esc(dayShort(festivalDay(x))) + ' · ' + esc(time(x.debut)) + ' → ' + esc(time(x.fin)) + '</div></div></div>';

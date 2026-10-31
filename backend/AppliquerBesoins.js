@@ -1,15 +1,18 @@
 /**
- * Met à jour la colonne nb_requis de la feuille Shifts selon le rôle, sans toucher au reste.
+ * Recopie les besoins de la feuille PolesRoles dans la colonne nb_requis de la feuille Shifts.
  * A coller dans un fichier du projet Apps Script, puis exécuter appliquerBesoins depuis l'éditeur.
- * Modifiable et relançable à tout moment.
+ * Relançable après chaque modification de PolesRoles.
  */
 function appliquerBesoins() {
-  var BESOINS = { service: 3, commande: 3, back: 2, merch: 2, general: 1, accueil: 1 };
+  var besoins = {};
+  readTable_(SHEETS.ROLES).forEach(function (r) {
+    besoins[wishKey_(r.pole, r.role)] = Number(r.besoin) || 0;
+  });
   var s = sheet_(SHEETS.SHIFTS);
   var colonne = HEADERS.Shifts.indexOf('nb_requis') + 1;
   var modifies = 0;
   readTable_(SHEETS.SHIFTS).forEach(function (shift) {
-    var besoin = BESOINS[normName_(shift.intitule)];
+    var besoin = besoins[wishKey_(shift.pole, shift.intitule)];
     if (besoin === undefined) return;
     s.getRange(shift._row, colonne).setValue(besoin);
     modifies++;
