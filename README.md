@@ -46,6 +46,9 @@ sur fond transparent, puis indiquez `LOGO_URL: 'assets/logo.png'` dans `js/confi
 | **ModelesSMS** | `id`, `titre`, `texte` | Variables : `{prenom}`, `{shift}`, `{heure}`, `{lieu}`. |
 | **Commentaires** | | Remplie par l'appli, visible des managers uniquement. |
 | **Journal** | | Historique des changements faits par les managers. |
+| **Photos** | | Photos de profil réduites, remplie par l'appli. |
+
+Dans **Utilisateurs**, la colonne `disponibilites` s'écrit par exemple `vendredi 18h-22h, samedi 12h-2h`, ou `samedi` pour toute la journée. Vide, le bénévole est disponible tout le festival. Un texte illisible le rend indisponible.
 
 Le référent d'un bénévole est tout manager dont `poles` contient le pôle du shift : le nom doit être écrit de la même façon dans les deux feuilles.
 

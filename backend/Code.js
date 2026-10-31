@@ -11,12 +11,14 @@ var SHEETS = {
   COMMENTS: 'Commentaires',
   SMS: 'ModelesSMS',
   LOG: 'Journal',
-  ROLES: 'PolesRoles'
+  ROLES: 'PolesRoles',
+  PHOTOS: 'Photos'
 };
 
 var HEADERS = {
-  Utilisateurs: ['id', 'nom', 'telephone', 'email', 'genre', 'mot_de_passe', 'poles', 'mdp_choisi', 'mdp_temp', 'reset_hash', 'reset_expire', 'souhaits', 'binome'],
+  Utilisateurs: ['id', 'nom', 'telephone', 'email', 'genre', 'mot_de_passe', 'poles', 'mdp_choisi', 'mdp_temp', 'reset_hash', 'reset_expire', 'souhaits', 'binome', 'age', 'description', 'vitesse_pointe', 'disponibilites'],
   PolesRoles: ['pole', 'role', 'besoin', 'format'],
+  Photos: ['user_id', 'photo'],
   Shifts: ['id', 'pole', 'intitule', 'date', 'debut', 'fin', 'lieu', 'nb_requis'],
   Affectations: ['shift_id', 'benevole_id'],
   Commentaires: ['id', 'benevole_id', 'manager_id', 'manager_nom', 'date', 'texte'],
@@ -33,6 +35,10 @@ var APP_URL = 'https://heytienne.github.io/speed-benevoles/';
 var RESET_HOURS = 24;
 var MAIL_COOLDOWN_SECONDS = 300;
 var MIN_PASSWORD_LENGTH = 8;
+// Une cellule de Sheet contient au plus 50 000 caractères : l'appli réduit les photos avant l'envoi.
+var MAX_PHOTO_LENGTH = 45000;
+var MAX_DESCRIPTION_LENGTH = 500;
+var JOURS = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
 
 /* ---------- Point d'entrée HTTP ---------- */
 
@@ -77,6 +83,10 @@ function route_(req) {
   switch (req.action) {
     case 'dashboard':
       return isManager_(user) ? managerDashboard_(user) : benevoleDashboard_(user);
+    case 'getProfile':
+      return profile_(user);
+    case 'saveProfile':
+      return withLock_(function () { return saveProfile_(user, req); });
     case 'assign':
       return withLock_(function () { return assign_(requireManager_(user), req); });
     case 'unassign':
@@ -196,6 +206,37 @@ function parseWishes_(v) {
 function hasWish_(user, shift) {
   var key = wishKey_(shift.pole, shift.intitule);
   return user.wishes.some(function (w) { return w.key === key; });
+}
+
+// Disponibilités écrites "vendredi 18h-22h, samedi" ; un jour seul vaut pour toute la journée.
+function parseDisponibilites_(v) {
+  var fenetres = [];
+  splitPoles_(normName_(v)).forEach(function (texte) {
+    var m = texte.match(/^([a-z]+)(?:\s+(\d{1,2})(?:[h:](\d{2})?)?\s*(?:-|a)\s*(\d{1,2})(?:[h:](\d{2})?)?)?$/);
+    if (!m || JOURS.indexOf(m[1]) === -1) return;
+    var fenetre = { jour: JOURS.indexOf(m[1]), debut: 0, fin: 1440 * 2 };
+    if (m[2] !== undefined) {
+      fenetre.debut = (+m[2]) * 60 + (+(m[3] || 0));
+      fenetre.fin = (+m[4]) * 60 + (+(m[5] || 0));
+      if (fenetre.fin <= fenetre.debut) fenetre.fin += 1440;
+    }
+    fenetres.push(fenetre);
+  });
+  return fenetres;
+}
+
+// Colonne vide : disponible tout le temps. Texte illisible : considéré comme indisponible.
+function isAvailable_(user, shift) {
+  if (!str_(user.disponibilites)) return true;
+  var range = shiftRange_(shift);
+  var d = shift.date.split('-');
+  var base = Date.UTC(+d[0], +d[1] - 1, +d[2]) / 60000;
+  // Avant 6h, le shift appartient à la soirée de la veille, comme dans l'appli.
+  if (shift.debut < '06:00') base -= 1440;
+  var jour = new Date(base * 60000).getUTCDay();
+  return parseDisponibilites_(user.disponibilites).some(function (f) {
+    return f.jour === jour && range.start - base >= f.debut && range.end - base <= f.fin;
+  });
 }
 
 function loadUsers_() {
@@ -446,6 +487,66 @@ function contact_(u) {
   return { id: u.id, nom: u.nom, telephone: u.telephone, email: u.email };
 }
 
+/* ---------- Profil ---------- */
+
+// Les photos ont leur propre feuille : Utilisateurs reste lisible et rapide à charger.
+function readPhotos_() {
+  var photos = {};
+  if (!SpreadsheetApp.getActive().getSheetByName(SHEETS.PHOTOS)) return photos;
+  readTable_(SHEETS.PHOTOS).forEach(function (p) { photos[str_(p.user_id)] = str_(p.photo); });
+  return photos;
+}
+
+function savePhoto_(userId, photo) {
+  var ss = SpreadsheetApp.getActive();
+  var s = ss.getSheetByName(SHEETS.PHOTOS);
+  if (!s) {
+    s = ss.insertSheet(SHEETS.PHOTOS);
+    s.appendRow(HEADERS.Photos);
+  }
+  var row = readTable_(SHEETS.PHOTOS).filter(function (p) { return str_(p.user_id) === userId; })[0];
+  if (!photo) {
+    if (row) s.deleteRow(row._row);
+  } else if (row) {
+    s.getRange(row._row, 2).setValue(photo);
+  } else {
+    s.appendRow([userId, photo]);
+  }
+}
+
+function profile_(user) {
+  return {
+    nom: user.nom,
+    email: user.email,
+    telephone: user.telephone,
+    age: str_(user.age),
+    description: str_(user.description),
+    vitesse: str_(user.vitesse_pointe),
+    photo: readPhotos_()[user.id] || ''
+  };
+}
+
+function saveProfile_(user, req) {
+  var age = str_(req.age);
+  if (age && !(/^\d{1,3}$/.test(age) && +age >= 1 && +age <= 120)) fail_("L'âge doit être un nombre entre 1 et 120.");
+  var vitesse = str_(req.vitesse).replace(',', '.');
+  if (vitesse && !(/^\d+(\.\d+)?$/.test(vitesse) && +vitesse <= 100000)) fail_('La vitesse doit être un nombre positif.');
+  var description = str_(req.description);
+  if (description.length > MAX_DESCRIPTION_LENGTH) fail_('La description dépasse ' + MAX_DESCRIPTION_LENGTH + ' caractères.');
+
+  // Sans champ photo, la photo actuelle ne change pas ; une valeur vide la supprime.
+  if (req.photo !== undefined && req.photo !== null) {
+    var photo = String(req.photo);
+    if (photo && (photo.length > MAX_PHOTO_LENGTH || !/^data:image\/jpeg;base64,[A-Za-z0-9+\/=]+$/.test(photo))) {
+      fail_('Cette photo ne peut pas être enregistrée. Essayez-en une autre.');
+    }
+    savePhoto_(user.id, photo);
+  }
+  setUserFields_(user, { age: age, description: description ? safeCell_(description) : '', vitesse_pointe: vitesse });
+  user.description = description;
+  return profile_(user);
+}
+
 /* ---------- Vue bénévole ---------- */
 
 function benevoleDashboard_(user) {
@@ -464,23 +565,34 @@ function benevoleDashboard_(user) {
   var mine = {};
   var festivalHours = 0;
   var shiftById = {};
+  var equipe = {};
+  var nomParId = {};
+  benevoles.forEach(function (b) { nomParId[b.id] = b.nom; });
   shifts.forEach(function (s) { shiftById[s.id] = s; });
   assignments.forEach(function (a) {
     var s = shiftById[a.shiftId];
     if (!s) return;
     festivalHours += s.heures;
     if (a.benevoleId === user.id) mine[s.id] = true;
+    else if (nomParId[a.benevoleId]) (equipe[s.id] = equipe[s.id] || []).push(nomParId[a.benevoleId]);
   });
 
+  var toutesPhotos = readPhotos_();
+  var photos = {};
   var myShifts = shifts.filter(function (s) { return mine[s.id]; }).map(function (s) {
     var copy = JSON.parse(JSON.stringify(s));
     copy.referents = referentsOf(s.pole);
+    copy.referents.forEach(function (r) {
+      if (toutesPhotos[r.id]) photos[r.id] = toutesPhotos[r.id];
+    });
+    copy.coequipiers = (equipe[s.id] || []).sort(function (a, b) { return a.localeCompare(b); });
     return copy;
   });
 
   return {
     user: publicUser_(user),
     shifts: myShifts,
+    photos: photos,
     festival: { benevoles: benevoles.length, shifts: shifts.length, heures: festivalHours }
   };
 }
@@ -515,7 +627,7 @@ function managerDashboard_(user) {
   }).map(function (s) {
     var copy = JSON.parse(JSON.stringify(s));
     copy.benevoleIds = onShift[s.id] || [];
-    copy.candidats = benevoles.filter(function (b) { return hasWish_(b, s); }).map(function (b) { return b.id; });
+    copy.candidats = benevoles.filter(function (b) { return hasWish_(b, s) && isAvailable_(b, s); }).map(function (b) { return b.id; });
     return copy;
   });
 
@@ -547,6 +659,7 @@ function managerDashboard_(user) {
       var binome = benevoles.filter(function (o) { return o.id !== b.id && normName_(o.nom) === normName_(b.binome); })[0];
       c.binomeId = binome ? binome.id : '';
       c.binomeNom = binome ? binome.nom : str_(b.binome);
+      c.disponibilites = str_(b.disponibilites);
       return c;
     }).sort(function (a, b) { return a.nom.localeCompare(b.nom); }),
     comments: comments,
@@ -572,6 +685,9 @@ function requireBenevole_(id) {
 function requireWish_(shift, benevole) {
   if (!hasWish_(benevole, shift)) {
     fail_(benevole.nom + ' n\'a pas « ' + shift.pole + ' : ' + shift.intitule + ' » dans ses souhaits.', 'wish');
+  }
+  if (!isAvailable_(benevole, shift)) {
+    fail_(benevole.nom + ' n\'est pas disponible sur ce créneau (' + str_(benevole.disponibilites) + ').', 'dispo');
   }
 }
 

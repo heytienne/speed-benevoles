@@ -24,8 +24,13 @@
     authView: 'login',
     loginNom: '',
     resetToken: null,
-    calScroll: null
+    calScroll: null,
+    profile: null,
+    profileDraft: null,
+    profileBusy: false
   };
+
+  var VITESSE_UNITE = 'km/h';
 
   var resetLink = location.hash.match(/^#reset=([\w-]+)$/);
   if (resetLink) {
@@ -115,6 +120,8 @@
     state.stack = [];
     state.tab = null;
     state.selected = {};
+    state.profile = null;
+    state.profileDraft = null;
     write(SESSION_KEY, null);
     write(CACHE_KEY, null);
     render();
@@ -231,8 +238,8 @@
   function ticket(s, opts) {
     var now = nowMinutes();
     var status = s.end <= now ? 'past' : s.start <= now ? 'now' : '';
-    var tag = opts.href ? 'button' : 'div';
-    var attrs = opts.href ? ' data-act="openShift" data-id="' + esc(s.id) + '"' : '';
+    var tag = opts.act ? 'button' : 'div';
+    var attrs = opts.act ? ' data-act="' + opts.act + '" data-id="' + esc(s.id) + '"' : '';
     return '<' + tag + ' class="ticket ' + (status === 'past' ? 'past' : '') + '"' + attrs + '>' +
       '<div class="ticket-body"><div class="hex"><span>' + esc(time(s.debut)) + '<small>→ ' + esc(time(s.fin)) + '</small></span></div>' +
       '<div class="ticket-text"><div class="ticket-title">' + esc(s.intitule) + '</div>' +
@@ -400,11 +407,138 @@
 
   function renderBenevole() {
     if (!state.tab) state.tab = 'planning';
-    var content = !state.data ? skeleton()
+    var top = state.stack[state.stack.length - 1];
+    if (top && state.data) {
+      root.innerHTML = shell(myShiftDetail(top), { back: true });
+      return;
+    }
+    var content = state.tab === 'profil' ? profilePage()
+      : !state.data ? skeleton()
       : state.tab === 'planning' ? benevolePlanning()
       : state.tab === 'contacts' ? benevoleContacts()
       : benevoleStats();
-    root.innerHTML = shell(content, { nav: nav([['planning', 'Planning'], ['contacts', 'Référents'], ['stats', 'Stats']]) });
+    root.innerHTML = shell(content, { nav: nav([['planning', 'Planning'], ['contacts', 'Référents'], ['stats', 'Stats'], ['profil', 'Profil']]) });
+  }
+
+  function validPhoto(photo) {
+    return /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(photo || '') ? photo : '';
+  }
+
+  function avatar(nom, photo, large) {
+    var cls = 'avatar' + (large ? ' large' : '');
+    if (validPhoto(photo)) return '<img class="' + cls + '" src="' + esc(photo) + '" alt="Photo de ' + esc(nom) + '">';
+    var initiales = String(nom).split(' ').map(function (m) { return m.charAt(0); }).join('').slice(0, 2).toUpperCase();
+    return '<span class="' + cls + ' empty" aria-hidden="true">' + esc(initiales) + '</span>';
+  }
+
+  function referentCard(r) {
+    var photos = state.data.photos || {};
+    return '<div class="person">' + avatar(r.nom, photos[r.id]) +
+      '<div class="grow"><div class="name">' + esc(r.nom) + '</div>' +
+      '<div class="sub">' + esc(r.telephone) + (r.telephone && r.email ? ' · ' : '') + esc(r.email) + '</div>' +
+      (r.telephone || r.email
+        ? '<div class="contact-actions">' + contactButtons(r) + '</div>'
+        : '<p class="hint">Coordonnées pas encore renseignées.</p>') +
+      '</div></div>';
+  }
+
+  function myShiftDetail(view) {
+    var s = state.data.shifts.filter(function (x) { return x.id === view.id; })[0];
+    if (!s) return '<div class="empty"><b>Créneau introuvable</b>Votre planning a peut-être changé.</div>';
+    var equipe = s.coequipiers || [];
+    return ticket(s, { extra: esc(dayShort(festivalDay(s))) + ' · ' + esc(hours(s.heures)) }) +
+      '<section class="card"><h3>Avec vous sur ce créneau</h3>' + (equipe.length
+        ? '<ul class="team">' + equipe.map(function (nom) { return '<li>' + esc(nom) + '</li>'; }).join('') + '</ul>'
+        : '<p class="hint">Personne d\'autre pour le moment.</p>') + '</section>' +
+      '<section class="card"><h3>' + (s.referents.length > 1 ? 'Vos référents' : 'Votre référent') + '</h3>' + (s.referents.length
+        ? s.referents.map(referentCard).join('')
+        : '<p class="hint">Aucun référent renseigné pour ce pôle.</p>') + '</section>';
+  }
+
+  /* ---------- Profil ---------- */
+
+  function loadProfile() {
+    api.call('getProfile', null, state.session.token).then(function (profile) {
+      state.profile = profile;
+      if (state.session && state.tab === 'profil') render();
+    }).catch(handleError);
+  }
+
+  // Le brouillon survit aux réaffichages, par exemple au retour de l'appareil photo.
+  function draft() {
+    if (!state.profileDraft) {
+      var p = state.profile;
+      state.profileDraft = { age: p.age, description: p.description, vitesse: p.vitesse, photo: undefined };
+    }
+    return state.profileDraft;
+  }
+
+  function currentPhoto() {
+    var d = draft();
+    return d.photo !== undefined ? d.photo : state.profile.photo;
+  }
+
+  function photoBlock() {
+    var photo = currentPhoto();
+    return avatar(state.profile.nom, photo, true) +
+      '<div class="contact-actions"><label class="btn small ghost">' + (photo ? 'Changer la photo' : 'Ajouter une photo') +
+      '<input type="file" id="profile-photo" accept="image/*" class="visually-hidden"></label>' +
+      (photo ? '<button type="button" class="btn small ghost" data-act="removePhoto">Retirer</button>' : '') + '</div>';
+  }
+
+  function profilePage() {
+    if (!state.profile) return skeleton();
+    var d = draft();
+    return '<h1 class="section-title">Mon profil</h1><form id="profile-form" class="profile">' +
+      '<div class="profile-photo" id="photo-block">' + photoBlock() + '</div>' +
+      '<p class="profile-name"><b>' + esc(state.profile.nom) + '</b><br><span class="sub">' + esc(state.profile.email) + '</span></p>' +
+      '<label class="field"><span>Âge</span><input type="text" inputmode="numeric" id="profile-age" maxlength="3" value="' + esc(d.age) + '"></label>' +
+      '<label class="field"><span>Vitesse de pointe (' + VITESSE_UNITE + ')</span><input type="text" inputmode="decimal" id="profile-vitesse" maxlength="10" value="' + esc(d.vitesse) + '"></label>' +
+      '<label class="field"><span>Description</span><textarea id="profile-description" maxlength="500">' + esc(d.description) + '</textarea></label>' +
+      '<button class="btn block" type="submit"' + (state.profileBusy ? ' disabled' : '') + '>' + (state.profileBusy ? 'Enregistrement…' : 'Enregistrer') + '</button></form>';
+  }
+
+  // Recadre au carré et réduit la photo pour qu'elle tienne dans une cellule du Sheet.
+  function resizePhoto(file) {
+    return new Promise(function (resolve, reject) {
+      var url = URL.createObjectURL(file);
+      var img = new Image();
+      img.onload = function () {
+        var SIZE = 160;
+        var side = Math.min(img.naturalWidth, img.naturalHeight);
+        var canvas = document.createElement('canvas');
+        canvas.width = SIZE;
+        canvas.height = SIZE;
+        var ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, SIZE, SIZE);
+        ctx.drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, SIZE, SIZE);
+        URL.revokeObjectURL(url);
+        resolve(canvas.toDataURL('image/jpeg', 0.75));
+      };
+      img.onerror = function () {
+        URL.revokeObjectURL(url);
+        reject(new Error('image'));
+      };
+      img.src = url;
+    });
+  }
+
+  function saveProfile() {
+    if (state.profileBusy) return;
+    var d = draft();
+    state.profileBusy = true;
+    render();
+    var payload = { age: d.age, description: d.description, vitesse: d.vitesse };
+    if (d.photo !== undefined) payload.photo = d.photo;
+    api.call('saveProfile', payload, state.session.token).then(function (profile) {
+      state.profile = profile;
+      state.profileDraft = null;
+      toast('Profil enregistré.');
+    }).catch(handleError).then(function () {
+      state.profileBusy = false;
+      if (state.session) render();
+    });
   }
 
   function benevolePlanning() {
@@ -419,7 +553,7 @@
     return html + groupByDay(shifts, function (s) {
       var extra = esc(hours(s.heures));
       if (next && s.id === next.id && s.start > now) extra = '<span class="pill">Prochain</span> ' + extra;
-      return ticket(s, { extra: extra });
+      return ticket(s, { extra: extra, act: 'openMyShift' });
     });
   }
 
@@ -429,10 +563,7 @@
     return '<h1 class="section-title">Mes référents</h1><div class="card-grid">' + poles.map(function (pole) {
       var shift = state.data.shifts.filter(function (s) { return s.pole === pole; })[0];
       var refs = shift.referents.length
-        ? shift.referents.map(function (r) {
-          return '<div class="row" style="display:block"><div class="name">' + esc(r.nom) + '</div>' +
-            '<div class="sub">' + esc(r.telephone) + '</div><div class="contact-actions">' + contactButtons(r) + '</div></div>';
-        }).join('')
+        ? shift.referents.map(referentCard).join('')
         : '<p class="hint">Aucun référent renseigné pour ce pôle.</p>';
       return '<section class="card"><h3>Pôle ' + esc(pole) + '</h3>' + refs + '</section>';
     }).join('') + '</div>';
@@ -659,7 +790,7 @@
     }).sort(function (a, b) {
       return (a.conflict ? 2 : 0) - (b.conflict ? 2 : 0) + (a.duo ? 0 : 1) - (b.duo ? 0 : 1);
     });
-    if (!list.length) return '<div class="empty">Aucun bénévole disponible n\'a ce poste dans ses souhaits.</div>';
+    if (!list.length) return '<div class="empty">Aucun bénévole disponible à cette heure n\'a ce poste dans ses souhaits.</div>';
     return list.map(function (it) {
       var label = it.conflict
         ? '<span class="pill warn">Déjà sur ' + esc(it.conflict.intitule) + ' ' + esc(time(it.conflict.debut)) + '-' + esc(time(it.conflict.fin)) + '</span>'
@@ -674,7 +805,7 @@
     if (!s) return '<div class="empty"><b>Shift introuvable</b></div>';
     var title = view.oldId ? 'Remplacer ' + firstName(benevole(view.oldId).nom) : 'Ajouter un bénévole';
     return '<h1 class="section-title">' + esc(title) + '</h1><p class="hint">' + esc(s.intitule) + ' · ' + esc(dayShort(festivalDay(s))) + ' · ' + esc(time(s.debut)) + ' → ' + esc(time(s.fin)) + '</p>' +
-      '<p class="hint">Seuls les bénévoles ayant ce poste dans leurs souhaits sont proposés.</p>' +
+      '<p class="hint">Seuls les bénévoles ayant ce poste en souhait et disponibles sur ce créneau sont proposés.</p>' +
       '<input type="search" id="picker-search" placeholder="Rechercher un nom" aria-label="Rechercher un bénévole" value="' + esc(state.search) + '">' +
       '<div id="picker-list" style="margin-top:6px">' + pickerList(view) + '</div>';
   }
@@ -691,7 +822,8 @@
       '<section class="card"><h3>Souhaits</h3>' + (b.souhaits.length
         ? '<p class="hint">Affectation possible uniquement sur ces postes.</p><div class="contact-actions">' + b.souhaits.map(function (w) { return '<span class="pill">' + esc(w) + '</span>'; }).join(' ') + '</div>'
         : '<p class="hint">Aucun souhait renseigné : affectation impossible.</p>') +
-      '<p><b>Binôme souhaité :</b> ' + (b.binomeNom ? esc(b.binomeNom) : 'aucun') + '</p></section>' +
+      '<p><b>Binôme souhaité :</b> ' + (b.binomeNom ? esc(b.binomeNom) : 'aucun') + '</p>' +
+      '<p><b>Disponibilités :</b> ' + (b.disponibilites ? esc(b.disponibilites) : 'tout le festival') + '</p></section>' +
       '<section class="card"><h3>Ses shifts</h3>' + (b.busy.length ? b.busy.map(function (x) {
         return '<div class="row" style="min-height:0"><div class="grow"><div class="name">' + esc(x.intitule) + '</div><div class="sub">' +
           esc(x.pole) + ' · ' + esc(dayShort(festivalDay(x))) + ' · ' + esc(time(x.debut)) + ' → ' + esc(time(x.fin)) + '</div></div></div>';
@@ -780,6 +912,11 @@
 
   function renderManager() {
     if (!state.tab) state.tab = 'shifts';
+    var managerNav = [['shifts', 'Shifts'], ['benevoles', 'Bénévoles'], ['profil', 'Profil']];
+    if (state.tab === 'profil' && !state.stack.length) {
+      root.innerHTML = shell(profilePage(), { nav: nav(managerNav) });
+      return;
+    }
     if (!state.data || !state.data.benevoles) {
       root.innerHTML = shell(skeleton());
       return;
@@ -794,7 +931,7 @@
       return;
     }
     var content = state.tab === 'shifts' ? managerShifts() : managerBenevoles();
-    root.innerHTML = shell(content, { nav: nav([['shifts', 'Shifts'], ['benevoles', 'Bénévoles']]), after: selectBar(false) });
+    root.innerHTML = shell(content, { nav: nav(managerNav), after: selectBar(false) });
   }
 
   function render() {
@@ -831,6 +968,12 @@
       state.selected = {};
       window.scrollTo(0, 0);
       render();
+      if (state.tab === 'profil') loadProfile();
+    },
+    openMyShift: function (el) { push({ type: 'myshift', id: el.dataset.id }); },
+    removePhoto: function () {
+      draft().photo = '';
+      document.getElementById('photo-block').innerHTML = photoBlock();
     },
     demoLogin: function (el) {
       var f = document.getElementById('login-form');
@@ -941,6 +1084,15 @@
   });
 
   document.addEventListener('change', function (e) {
+    if (e.target.id === 'profile-photo' && e.target.files[0]) {
+      resizePhoto(e.target.files[0]).then(function (photo) {
+        draft().photo = photo;
+        document.getElementById('photo-block').innerHTML = photoBlock();
+      }).catch(function () {
+        toast('Cette image ne peut pas être lue. Essayez-en une autre.');
+      });
+      return;
+    }
     if (e.target.dataset.act !== 'toggle') return;
     if (e.target.checked) state.selected[e.target.dataset.id] = true;
     else delete state.selected[e.target.dataset.id];
@@ -948,7 +1100,10 @@
   });
 
   document.addEventListener('input', function (e) {
-    if (e.target.id === 'picker-search') {
+    if (e.target.id === 'profile-age') draft().age = e.target.value;
+    else if (e.target.id === 'profile-vitesse') draft().vitesse = e.target.value;
+    else if (e.target.id === 'profile-description') draft().description = e.target.value;
+    else if (e.target.id === 'picker-search') {
       state.search = e.target.value;
       document.getElementById('picker-list').innerHTML = pickerList(state.stack[state.stack.length - 1]);
     } else if (e.target.id === 'sms-text') {
@@ -963,6 +1118,7 @@
     if (e.target.id === 'login-form') doLogin(e.target.nom.value, e.target.password.value);
     else if (e.target.id === 'forgot-form') doForgot(e.target.identifiant.value);
     else if (e.target.id === 'password-form') doChoosePassword(e.target);
+    else if (e.target.id === 'profile-form') saveProfile();
   });
 
   document.addEventListener('visibilitychange', function () {
